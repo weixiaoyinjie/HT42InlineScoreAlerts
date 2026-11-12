@@ -1,0 +1,80 @@
+name: Build HT42 Inline Score APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'HT42InlineScore_OneUpload.zip'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Unpack source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f HT42InlineScore_OneUpload.zip
+          unzip -oq HT42InlineScore_OneUpload.zip
+          test -f app/build.gradle
+      - name: Use Android SDK installed on Ubuntu runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_DIR="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          test -d "$SDK_DIR"
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          if [ -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER="$(find "$SDK_DIR/cmdline-tools" -type f -name sdkmanager -perm /111 2>/dev/null | sort -Vr | head -n1)"
+          fi
+          test -n "$SDKMANAGER"
+          if [ ! -d "$SDK_DIR/platforms/android-35" ] || [ ! -d "$SDK_DIR/build-tools/35.0.0" ]; then
+            (yes | "$SDKMANAGER" --sdk_root="$SDK_DIR" --licenses >/dev/null) || true
+            "$SDKMANAGER" --sdk_root="$SDK_DIR" --install 'platforms;android-35' 'build-tools;35.0.0'
+          fi
+          test -d "$SDK_DIR/platforms/android-35"
+          test -d "$SDK_DIR/build-tools/35.0.0"
+      - name: Run screenshot and risk tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in tests/*.test.js; do node "$f"; done
+          mkdir -p /tmp/ht42-tests
+          javac -encoding UTF-8 -d /tmp/ht42-tests \
+            app/src/main/java/com/htlive/monitor/AlertPolicy.java \
+            tests/java/com/htlive/monitor/AlertPolicyTest.java
+          java -cp /tmp/ht42-tests com.htlive.monitor.AlertPolicyTest
+          javac -encoding UTF-8 -d /tmp/ht42-tests \
+            tests/java/org/json/JSONObject.java \
+            app/src/main/java/com/htlive/monitor/ScorePlanRiskEngine.java \
+            tests/java/com/htlive/monitor/ScorePlanRiskEngineTest.java
+          java -cp /tmp/ht42-tests com.htlive.monitor.ScorePlanRiskEngineTest
+          javac -encoding UTF-8 -d /tmp/ht42-tests \
+            tests/java/org/json/JSONObject.java \
+            app/src/main/java/com/htlive/monitor/MainScoreRiskEngine.java \
+            tests/java/com/htlive/monitor/MainScoreRiskEngineTest.java
+          java -cp /tmp/ht42-tests com.htlive.monitor.MainScoreRiskEngineTest
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HT42InlineScore-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
